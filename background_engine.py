@@ -27,7 +27,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pairs import all_pairs
 from quotexapi.stable_api import Quotex
-from signal_logic import calculate_indicators, get_signal_simple, calculate_htf_trend
+from signal_logic import calculate_indicators, get_signal_simple, drop_forming_candle
 
 logger = logging.getLogger(__name__)
 
@@ -298,25 +298,34 @@ class _Engine:
                 return s
 
             df = pd.DataFrame(candles)
+            # Broker sometimes pushes the still-forming (not yet closed) candle
+            # as the last row — drop it so signals only ever fire on confirmed data.
+            df = drop_forming_candle(df, period)
+            if df is None or len(df) < 30:
+                s = self._empty(symbol, display_name, market)
+                s["error"] = "Not enough confirmed candle data (< 30 after dropping forming candle)"
+                return s
 
-            htf_trend = "neutral"
+            df_5m = None
             try:
+                htf_period = max(period * 5, 300)
                 htf_raw = await asyncio.wait_for(
                     client.get_candles(
                         symbol,
                         end_from_time=time.time(),
                         offset=CANDLE_OFFSET,
-                        period=max(period * 5, 300),
+                        period=htf_period,
                     ),
                     timeout=CANDLE_TIMEOUT,
                 )
                 if htf_raw:
-                    htf_trend = calculate_htf_trend(pd.DataFrame(htf_raw))
+                    df_5m = pd.DataFrame(htf_raw)
+                    df_5m = drop_forming_candle(df_5m, htf_period)
             except Exception:
-                pass  # HTF is best-effort; carry on with neutral trend
+                pass  # HTF is best-effort; carry on with no 5m trend filter
 
             df = calculate_indicators(df)
-            sig, conf, reasons = get_signal_simple(df, htf_trend=htf_trend)
+            sig, conf, reasons = get_signal_simple(df, df_5m=df_5m)
             direction  = {"CALL": "call", "PUT": "put"}.get(sig, "neutral")
             last_close = df["Close"].iloc[-1]
             price      = None if last_close != last_close else round(float(last_close), 5)
