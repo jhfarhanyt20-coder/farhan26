@@ -85,7 +85,7 @@ TREND_EMA_LEN = 20   # used for optional soft 5m trend confirmation
 # CALL is only allowed near a support/demand zone (market bottom).
 # PUT  is only allowed near a resistance/supply zone (market top).
 ATR_PERIOD = 14
-SR_LOOKBACK = 35          # মিড রেঞ্জ (দুটোর জন্য কমন)
+SR_LOOKBACK = 50          # মিড রেঞ্জ (দুটোর জন্য কমন)
 SR_ZONE_ATR_MULT = 0.4    # গোল্ডিলক্স - খুব টাইট না, খুব লুজ না
 
 # Minimum factors required for signal (CRITICAL for 60%+ accuracy)
