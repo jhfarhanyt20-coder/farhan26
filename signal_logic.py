@@ -88,8 +88,31 @@ ATR_PERIOD = 14
 SR_LOOKBACK = 50          # মিড রেঞ্জ (দুটোর জন্য কমন)
 SR_ZONE_ATR_MULT = 0.4    # গোল্ডিলক্স - খুব টাইট না, খুব লুজ না
 
-# Minimum factors required for signal (CRITICAL for 60%+ accuracy)
-MIN_FACTORS_REQUIRED = 2  # CALL আর PUT দুইটার জন্য
+# Minimum factors required for signal (CRITICAL for accuracy — raised from 2)
+MIN_FACTORS_REQUIRED = 4  # CALL আর PUT দুইটার জন্য — fewer but higher-quality signals
+
+# ── Trend filter (HARD gate, not just informational) ──
+# Counter-trend mean-reversion at S/R (buying support in a downtrend, selling
+# resistance in an uptrend) is what usually causes accuracy BELOW 50% — those
+# trades get run over by the breakout instead of bouncing. Require the trade
+# to agree with the higher-timeframe trend: buy dips in an uptrend, sell
+# rallies in a downtrend. Set to False to disable (not recommended).
+REQUIRE_TREND_ALIGNMENT = True
+
+# ── Breakout rejection ──
+# If the zone (support/resistance) is being broken with an impulsive candle
+# right now, don't treat it as a bounce — that's usually the start of a
+# breakout, not a reversal. body > BREAKOUT_IMPULSE_MULT * avg_body AND close
+# beyond the zone by more than this many ATRs = treat as breakout, skip.
+BREAKOUT_IMPULSE_MULT = 1.5
+BREAKOUT_ATR_MULT = 0.3
+
+# ── Low-volatility / chop filter ──
+# When current ATR is well below its own recent average, the market is
+# choppy/ranging with no real momentum — signals here tend to be noise.
+# Skip trades when current ATR < CHOP_ATR_RATIO * its rolling average.
+CHOP_ATR_RATIO = 0.55
+CHOP_ATR_AVG_LOOKBACK = 30
 
 
 # ============================================================
@@ -333,7 +356,7 @@ def _support_resistance_zone(df, lookback=SR_LOOKBACK, atr_mult=SR_ZONE_ATR_MULT
     near_resistance = df["Close"] >= (resistance - zone_width)
     near_support = df["Close"] <= (support + zone_width)
 
-    return resistance, support, zone_width, near_resistance, near_support
+    return resistance, support, zone_width, near_resistance, near_support, atr
 
 
 # ============================================================
@@ -351,7 +374,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     cci_sig, cci_val = _cci_extreme_reversal(df)
     pa_sig = _price_action_structure(df)
     candle_sig, is_doji = _candlestick_pattern(df)
-    resistance, support, zone_width, near_resistance, near_support = _support_resistance_zone(df)
+    resistance, support, zone_width, near_resistance, near_support, atr = _support_resistance_zone(df)
 
     df["F_BollingerBounce"] = bb_sig
     df["F_RSIDivergence"] = rsi_sig
@@ -373,6 +396,15 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["SR_ZoneWidth"] = zone_width
     df["Near_Resistance"] = near_resistance
     df["Near_Support"] = near_support
+    df["ATR"] = atr
+    df["ATR_Avg"] = atr.rolling(CHOP_ATR_AVG_LOOKBACK).mean()
+
+    # Body of the current candle vs its recent average — used by the
+    # breakout-rejection filter (an impulsive candle punching through the
+    # zone is a breakout, not a bounce).
+    _body = (df["Close"] - df["Open"]).abs()
+    df["Body_Avg"] = _body.rolling(ORDER_BLOCK_BODY_LOOKBACK).mean()
+    df["Body"] = _body
 
     factor_cols = [
         "F_BollingerBounce", "F_RSIDivergence", "F_FairValueGap", "F_OrderBlock",
@@ -488,10 +520,57 @@ def get_signal_simple(df: pd.DataFrame, htf_trend: str = "neutral", min_confiden
     confidence = 0.0
     min_conf_floor = max(0.0, min(100.0, min_confidence))
 
-    # ── MAIN SIGNAL LOGIC WITH MIN_FACTORS_REQUIRED ──
-    # This is the key change for 60%+ accuracy
-    
-    if near_support and not near_resistance and bullish_count >= MIN_FACTORS_REQUIRED:
+    # ── Chop / low-volatility filter ──
+    # If current ATR is well below its own recent average, the market is
+    # ranging with no real momentum behind moves — skip.
+    atr_now = get_value_safe(df["ATR"]) if "ATR" in df.columns else None
+    atr_avg = get_value_safe(df["ATR_Avg"]) if "ATR_Avg" in df.columns else None
+    is_chop = bool(atr_avg and atr_now is not None and atr_now < CHOP_ATR_RATIO * atr_avg)
+
+    # ── Breakout rejection ──
+    # An impulsive candle punching through the zone is a breakout starting,
+    # not a bounce off it — the two look identical from "near_support" /
+    # "near_resistance" alone, so check candle body size explicitly.
+    body_now = get_value_safe(df["Body"]) if "Body" in df.columns else 0.0
+    body_avg = get_value_safe(df["Body_Avg"]) if "Body_Avg" in df.columns else 0.0
+    is_impulsive = bool(body_avg and body_now > BREAKOUT_IMPULSE_MULT * body_avg)
+    breaking_support = bool(
+        support_level is not None and atr_now is not None
+        and close < support_level - BREAKOUT_ATR_MULT * atr_now
+    )
+    breaking_resistance = bool(
+        resistance_level is not None and atr_now is not None
+        and close > resistance_level + BREAKOUT_ATR_MULT * atr_now
+    )
+    support_breaking_out = is_impulsive and breaking_support
+    resistance_breaking_out = is_impulsive and breaking_resistance
+
+    # ── Trend alignment (hard gate) ──
+    trend_ok_call = (not REQUIRE_TREND_ALIGNMENT) or current_trend in ("bull", "neutral")
+    trend_ok_put = (not REQUIRE_TREND_ALIGNMENT) or current_trend in ("bear", "neutral")
+
+    # ── MAIN SIGNAL LOGIC ──
+    # A signal now needs ALL of: at the zone, enough confluence factors,
+    # NOT a chop market, NOT an active breakout through the zone, AND
+    # (optionally) trend agreement. This trades fewer setups but each one
+    # has more going for it than the old "2/8 factors + near zone" gate.
+
+    if is_chop:
+        reasons.append("🚫 Skipped — low volatility / choppy market (ATR below its own average)")
+
+    elif near_support and not near_resistance and support_breaking_out:
+        reasons.append(
+            f"🚫 Skipped — impulsive candle breaking BELOW support (≈ {support_level:.5f}), "
+            "likely breakdown not bounce"
+        )
+
+    elif near_resistance and not near_support and resistance_breaking_out:
+        reasons.append(
+            f"🚫 Skipped — impulsive candle breaking ABOVE resistance (≈ {resistance_level:.5f}), "
+            "likely breakout not rejection"
+        )
+
+    elif near_support and not near_resistance and bullish_count >= MIN_FACTORS_REQUIRED and trend_ok_call:
         signal = "CALL"
         factor_conf = round((bullish_count / NUM_FACTORS) * 100, 1)
         confidence = max(min_conf_floor, factor_conf)
@@ -505,7 +584,7 @@ def get_signal_simple(df: pd.DataFrame, htf_trend: str = "neutral", min_confiden
         if trend_note:
             reasons.append(("✅ " if current_trend == "bull" else "⚠️ ") + trend_note)
 
-    elif near_resistance and not near_support and bearish_count >= MIN_FACTORS_REQUIRED:
+    elif near_resistance and not near_support and bearish_count >= MIN_FACTORS_REQUIRED and trend_ok_put:
         signal = "PUT"
         factor_conf = round((bearish_count / NUM_FACTORS) * 100, 1)
         confidence = max(min_conf_floor, factor_conf)
@@ -521,7 +600,17 @@ def get_signal_simple(df: pd.DataFrame, htf_trend: str = "neutral", min_confiden
 
     else:
         # No signal - show why
-        if near_support and bullish_count < MIN_FACTORS_REQUIRED:
+        if near_support and not near_resistance and bullish_count >= MIN_FACTORS_REQUIRED and not trend_ok_call:
+            reasons.append(
+                "⚠️ Price at support with enough factors, but trend is bearish — "
+                "counter-trend CALL blocked (REQUIRE_TREND_ALIGNMENT)"
+            )
+        elif near_resistance and not near_support and bearish_count >= MIN_FACTORS_REQUIRED and not trend_ok_put:
+            reasons.append(
+                "⚠️ Price at resistance with enough factors, but trend is bullish — "
+                "counter-trend PUT blocked (REQUIRE_TREND_ALIGNMENT)"
+            )
+        elif near_support and bullish_count < MIN_FACTORS_REQUIRED:
             reasons.append(
                 f"⚠️ Price at support zone but only {bullish_count}/{MIN_FACTORS_REQUIRED} factors bullish "
                 f"(need {MIN_FACTORS_REQUIRED} for CALL)"
@@ -540,3 +629,71 @@ def get_signal_simple(df: pd.DataFrame, htf_trend: str = "neutral", min_confiden
             reasons.append(trend_note)
 
     return signal, confidence, reasons
+
+
+# ============================================================
+# Backtest — measures REAL historical winrate. No accuracy number
+# in this file is trustworthy until you've run this against actual
+# candle history for the pair/timeframe you plan to trade.
+# ============================================================
+
+def backtest(df: pd.DataFrame, warmup: int = 60, htf_trend: str = "neutral", df_5m: pd.DataFrame = None):
+    """
+    Walk forward through historical 1-candle-per-step data, generating a
+    signal on each closed candle exactly as get_signal_simple would live,
+    then check whether the NEXT candle's direction (close vs that candle's
+    open) matched the signal. This mirrors how the bot actually trades:
+    signal on candle close -> enter at next candle's open -> settle at next
+    candle's close.
+
+    Returns a dict: {trades, wins, losses, winrate, by_direction}.
+
+    Usage:
+        candles = await client.get_candles(symbol, ..., period=60)
+        df = pd.DataFrame(candles)
+        result = backtest(df)
+        print(result["winrate"], result["trades"])
+
+    Run this per pair/timeframe you actually intend to trade — a strategy's
+    edge is never identical across pairs, timeframes, or market regimes, so
+    a single "60%" number quoted for "any timeframe" isn't something a
+    trustworthy backtest would ever produce.
+    """
+    df = _normalize_ohlc(df).reset_index(drop=True)
+    if len(df) < warmup + 2:
+        return {"trades": 0, "wins": 0, "losses": 0, "winrate": None,
+                "by_direction": {}, "note": "Not enough candles for a meaningful backtest"}
+
+    wins = losses = 0
+    by_dir = {"CALL": {"wins": 0, "losses": 0}, "PUT": {"wins": 0, "losses": 0}}
+
+    for i in range(warmup, len(df) - 1):
+        window = df.iloc[: i + 1]
+        sig, conf, _ = get_signal_simple(window, htf_trend=htf_trend, df_5m=df_5m)
+        if sig not in ("CALL", "PUT"):
+            continue
+
+        next_open = df["Open"].iloc[i + 1]
+        next_close = df["Close"].iloc[i + 1]
+        if next_close == next_open:
+            continue  # flat candle, no result either way
+
+        actual_up = next_close > next_open
+        predicted_up = sig == "CALL"
+        correct = actual_up == predicted_up
+
+        if correct:
+            wins += 1
+            by_dir[sig]["wins"] += 1
+        else:
+            losses += 1
+            by_dir[sig]["losses"] += 1
+
+    total = wins + losses
+    return {
+        "trades": total,
+        "wins": wins,
+        "losses": losses,
+        "winrate": round(wins / total * 100, 2) if total else None,
+        "by_direction": by_dir,
+    }
