@@ -6,6 +6,7 @@ Cloud:   push to GitHub → share.streamlit.io
          Secrets: QX_EMAIL, QX_PASSWORD, QX_COOKIES, QX_TOKEN
 """
 
+import hmac
 import os
 import sys
 import time
@@ -31,6 +32,71 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ─── Site-wide login ───────────────────────────────────────────────────────
+# Blocks the ENTIRE app (every page, plus credential auto-load / engine
+# auto-start below) until the right password is entered. This is what keeps
+# random visitors out when the app is deployed publicly (e.g. Streamlit
+# Cloud) — without this, anyone with the URL can open it.
+#
+# Password source, checked in this order:
+#   1. st.secrets["APP_PASSWORD"]   — set this under Streamlit Cloud →
+#      App settings → Secrets. Recommended for cloud deploys: it survives
+#      redeploys/restarts, unlike local storage.
+#   2. Environment variable APP_PASSWORD.
+#   3. A password set once from this login screen, stored locally (hashed)
+#      in app_data.db — convenient for local use, but on Streamlit Cloud's
+#      free tier this file can be wiped when the app restarts/redeploys, so
+#      prefer option 1 for anything public.
+
+
+def _configured_site_password() -> str:
+    try:
+        p = st.secrets.get("APP_PASSWORD", "")
+    except Exception:
+        p = ""
+    return p or os.environ.get("APP_PASSWORD", "")
+
+
+def _require_site_login() -> None:
+    if st.session_state.get("site_authenticated"):
+        return
+
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        st.markdown("## ⚡ Quotex Signal Desk")
+        st.caption("এই অ্যাপ প্রাইভেট — ঢোকার জন্য পাসওয়ার্ড দিন।")
+
+        fixed_pw = _configured_site_password()
+
+        if not fixed_pw and not db.has_site_password():
+            st.info("প্রথমবার — এই অ্যাপ protect করতে একটা পাসওয়ার্ড সেট করুন।")
+            with st.form("site_set_pw_form"):
+                p1 = st.text_input("নতুন পাসওয়ার্ড", type="password")
+                p2 = st.text_input("পাসওয়ার্ড আবার লিখুন", type="password")
+                if st.form_submit_button("পাসওয়ার্ড সেট করুন", type="primary", use_container_width=True):
+                    if not p1:
+                        st.error("পাসওয়ার্ড খালি রাখা যাবে না।")
+                    elif p1 != p2:
+                        st.error("দুইটা পাসওয়ার্ড মিলছে না।")
+                    else:
+                        db.save_site_password(p1)
+                        st.session_state.site_authenticated = True
+                        st.rerun()
+        else:
+            with st.form("site_login_form"):
+                pw = st.text_input("পাসওয়ার্ড", type="password")
+                if st.form_submit_button("Login", type="primary", use_container_width=True):
+                    ok = hmac.compare_digest(pw, fixed_pw) if fixed_pw else db.verify_site_password(pw)
+                    if ok:
+                        st.session_state.site_authenticated = True
+                        st.rerun()
+                    else:
+                        st.error("পাসওয়ার্ড ভুল হয়েছে।")
+    st.stop()
+
+
+_require_site_login()
 
 # ─── Session state ────────────────────────────────────────────────────────────
 
@@ -156,6 +222,11 @@ with st.sidebar:
             engine.stop()
             st.session_state.engine_started = False
             st.rerun()
+
+    st.divider()
+    if st.button("🔒 Logout", use_container_width=True):
+        st.session_state.site_authenticated = False
+        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD

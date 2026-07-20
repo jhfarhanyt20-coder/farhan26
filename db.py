@@ -25,6 +25,7 @@ _lock = threading.Lock()
 CREDENTIALS_KEY   = "credentials"
 AUTO_CONFIG_KEY   = "auto_trade_config"
 AUTO_TRADE_PW_KEY = "auto_trade_password"
+SITE_PW_KEY       = "site_password"
 
 
 def _connect():
@@ -100,32 +101,62 @@ def load_auto_config() -> dict:
     return load_json(AUTO_CONFIG_KEY, {}) or {}
 
 
-# ─── Auto Trade password lock ──────────────────────────────────────────────
-# Password is never stored in plain text — only a salted PBKDF2 hash.
+# ─── Password locks (Auto Trade + whole-site login) ────────────────────────
+# Passwords are never stored in plain text — only a salted PBKDF2 hash.
 
 def _hash_password(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000).hex()
 
 
-def has_auto_trade_password() -> bool:
-    return bool(load_json(AUTO_TRADE_PW_KEY, {}))
+def _has_password(key: str) -> bool:
+    return bool(load_json(key, {}))
 
 
-def save_auto_trade_password(password: str) -> None:
+def _save_password(key: str, password: str) -> None:
     salt = os.urandom(16)
-    save_json(AUTO_TRADE_PW_KEY, {
+    save_json(key, {
         "salt": salt.hex(),
         "hash": _hash_password(password, salt),
     })
 
 
-def verify_auto_trade_password(password: str) -> bool:
-    data = load_json(AUTO_TRADE_PW_KEY, {})
+def _verify_password(key: str, password: str) -> bool:
+    data = load_json(key, {})
     if not data or "salt" not in data or "hash" not in data:
         return False
     salt = bytes.fromhex(data["salt"])
     return hmac.compare_digest(_hash_password(password, salt), data["hash"])
 
 
+# Auto Trade page lock
+def has_auto_trade_password() -> bool:
+    return _has_password(AUTO_TRADE_PW_KEY)
+
+
+def save_auto_trade_password(password: str) -> None:
+    _save_password(AUTO_TRADE_PW_KEY, password)
+
+
+def verify_auto_trade_password(password: str) -> bool:
+    return _verify_password(AUTO_TRADE_PW_KEY, password)
+
+
 def clear_auto_trade_password() -> None:
     delete_key(AUTO_TRADE_PW_KEY)
+
+
+# Whole-app login (protects the app when deployed publicly, e.g. Streamlit Cloud)
+def has_site_password() -> bool:
+    return _has_password(SITE_PW_KEY)
+
+
+def save_site_password(password: str) -> None:
+    _save_password(SITE_PW_KEY, password)
+
+
+def verify_site_password(password: str) -> bool:
+    return _verify_password(SITE_PW_KEY, password)
+
+
+def clear_site_password() -> None:
+    delete_key(SITE_PW_KEY)

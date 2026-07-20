@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 USER_AGENT         = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 CANDLE_OFFSET      = 3600 * 3
 CONNECT_TIMEOUT    = 40
-ENTRY_LEAD_SECONDS = 4.0  # press trade this many seconds before entry candle opens
+ENTRY_LEAD_SECONDS = 3.0  # press trade this many seconds before entry candle opens
 IDLE_SCAN_SLEEP    = 2      # seconds between "no signal yet" pair checks
 MAX_TRADES_LOG     = 300
 
