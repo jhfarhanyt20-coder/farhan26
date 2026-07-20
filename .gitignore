@@ -1,0 +1,15 @@
+# Local SQLite DB — contains your saved Quotex credentials in plain text.
+# Never commit this if you push this project to GitHub / Streamlit Cloud.
+app_data.db
+
+# Session cookies / tokens saved locally by get_session_playwright.py
+session.json
+
+# Real secrets — use Streamlit Cloud "Secrets" settings instead
+.env
+.streamlit/secrets.toml
+
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
