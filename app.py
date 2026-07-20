@@ -49,6 +49,7 @@ for _k, _v in {
     "auto_mtg_mult": _saved_auto.get("martingale_multiplier", 2.2),
     "auto_account_type": _saved_auto.get("account_type", "PRACTICE"),
     "auto_duration": _saved_auto.get("duration", 60),
+    "auto_trade_unlocked": False,
 }.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -422,6 +423,60 @@ elif page == "Auto Trade":
         "start on **Demo** and small stakes until you're confident in the settings.",
         icon="⚠️",
     )
+
+    # ── Password lock ────────────────────────────────────────────────────────
+    # Nobody (including anyone else who opens this app's URL) can view settings
+    # or start/stop auto-trade without this password.
+    if not st.session_state.auto_trade_unlocked:
+        if not db.has_auto_trade_password():
+            st.info(
+                "🔒 এই পেইজ protect করার জন্য একটা পাসওয়ার্ড সেট করুন। এটা সেট করার পর "
+                "থেকে Auto Trade-এ ঢুকতে সবসময় এই পাসওয়ার্ড লাগবে।"
+            )
+            with st.form("auto_trade_set_pw_form"):
+                new_pw  = st.text_input("নতুন পাসওয়ার্ড", type="password")
+                new_pw2 = st.text_input("পাসওয়ার্ড আবার লিখুন", type="password")
+                if st.form_submit_button("পাসওয়ার্ড সেট করুন", type="primary"):
+                    if not new_pw:
+                        st.error("পাসওয়ার্ড খালি রাখা যাবে না।")
+                    elif new_pw != new_pw2:
+                        st.error("দুইটা পাসওয়ার্ড মিলছে না।")
+                    else:
+                        db.save_auto_trade_password(new_pw)
+                        st.session_state.auto_trade_unlocked = True
+                        st.success("পাসওয়ার্ড সেট হয়েছে ✅ — Auto Trade আনলক করা হলো।")
+                        st.rerun()
+        else:
+            st.info("🔒 Auto Trade লক করা আছে। ঢুকতে পাসওয়ার্ড দিন।")
+            with st.form("auto_trade_unlock_form"):
+                pw = st.text_input("পাসওয়ার্ড", type="password")
+                if st.form_submit_button("Unlock", type="primary"):
+                    if db.verify_auto_trade_password(pw):
+                        st.session_state.auto_trade_unlocked = True
+                        st.rerun()
+                    else:
+                        st.error("পাসওয়ার্ড ভুল হয়েছে।")
+        st.stop()
+
+    lock_col, pw_col = st.columns([1, 1])
+    if lock_col.button("🔒 Lock Auto Trade", use_container_width=True):
+        st.session_state.auto_trade_unlocked = False
+        st.rerun()
+    with pw_col.expander("🔑 পাসওয়ার্ড পরিবর্তন করুন"):
+        with st.form("auto_trade_change_pw_form"):
+            cur_pw  = st.text_input("বর্তমান পাসওয়ার্ড", type="password")
+            new_pw  = st.text_input("নতুন পাসওয়ার্ড", type="password")
+            new_pw2 = st.text_input("নতুন পাসওয়ার্ড আবার", type="password")
+            if st.form_submit_button("পরিবর্তন করুন"):
+                if not db.verify_auto_trade_password(cur_pw):
+                    st.error("বর্তমান পাসওয়ার্ড ভুল।")
+                elif not new_pw:
+                    st.error("নতুন পাসওয়ার্ড খালি রাখা যাবে না।")
+                elif new_pw != new_pw2:
+                    st.error("নতুন পাসওয়ার্ড দুইটা মিলছে না।")
+                else:
+                    db.save_auto_trade_password(new_pw)
+                    st.success("পাসওয়ার্ড পরিবর্তন হয়েছে ✅")
 
     if not has_creds():
         st.info("Broker credentials aren't configured yet — auto-trade will be available once they're set.")
