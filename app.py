@@ -95,16 +95,6 @@ def has_creds():
 def fmt_time(dt: datetime) -> str:
     return dt.strftime("%H:%M:%S")
 
-def parse_env(text: str) -> dict:
-    result = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        result[key.strip()] = val.strip().strip('"').strip("'")
-    return result
-
 def countdown_str(sec: float) -> str:
     s = max(0, int(sec))
     return f"{s // 60:02d}:{s % 60:02d}"
@@ -147,12 +137,12 @@ with st.sidebar:
             with st.expander("Full error details"):
                 st.code(err, language="")
     else:
-        st.info("○ Disconnected — go to Connection")
+        st.info("○ Disconnected — waiting for credentials")
 
     st.divider()
     page = st.radio(
         "Navigation",
-        ["Dashboard", "Generate Signal", "Auto Trade", "Signal History", "Connection"],
+        ["Dashboard", "Generate Signal", "Auto Trade", "Signal History"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -174,7 +164,7 @@ if page == "Dashboard":
     st.title("Market Overview")
 
     if not has_creds():
-        st.info("👈 Go to **Connection** page, enter your credentials — the engine starts automatically.")
+        st.info("No broker credentials configured yet. The engine will start automatically once they're set.")
         st.stop()
 
     if status == "connecting":
@@ -192,20 +182,14 @@ if page == "Dashboard":
 
         st.markdown("""
 **Common fixes:**
-- 🍪 **Cookies/Token expired** → Go to **Connection** page, re-paste fresh `.env`
+- 🍪 **Cookies/Token expired** → update the broker credentials in the app's Secrets and it will reconnect on next restart
 - 🌐 **No internet** → Check your network
 - ⏱ **Timeout** → Quotex may be slow; click Retry
 - ❓ **Other** → Check the error details above for the exact cause
 """)
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Retry Connection", type="primary", use_container_width=True):
-                engine.start(st.session_state.credentials)
-                st.rerun()
-        with col2:
-            if st.button("⚙ Go to Connection Page", use_container_width=True):
-                st.session_state["_nav"] = "Connection"
-                st.rerun()
+        if st.button("🔄 Retry Connection", type="primary", use_container_width=True):
+            engine.start(st.session_state.credentials)
+            st.rerun()
         st.stop()
 
     signals = engine.signals
@@ -292,7 +276,7 @@ elif page == "Generate Signal":
     st.caption("Pick a pair → engine fetches fresh candles → shows CALL/PUT with entry & exit time.")
 
     if not has_creds():
-        st.warning("Go to **Connection** page first.")
+        st.warning("Broker credentials aren't configured yet.")
         st.stop()
 
     left, right = st.columns([1, 1], gap="large")
@@ -440,7 +424,7 @@ elif page == "Auto Trade":
     )
 
     if not has_creds():
-        st.info("👈 Go to **Connection** page first — auto-trade needs your Quotex credentials.")
+        st.info("Broker credentials aren't configured yet — auto-trade will be available once they're set.")
         st.stop()
 
     at_status = auto_engine.status
@@ -661,107 +645,3 @@ elif page == "Signal History":
         c5.markdown(f"<small>{sig.get('scan_time','—')}</small>", unsafe_allow_html=True)
         st.divider()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONNECTION
-# ══════════════════════════════════════════════════════════════════════════════
-
-elif page == "Connection":
-    st.title("Broker Connection")
-    st.caption("Enter credentials once — the engine starts automatically and runs continuously.")
-
-    tab1, tab2 = st.tabs(["Paste .env file", "Manual entry"])
-
-    with tab1:
-        st.markdown(
-            "Paste your `.env` file below. "
-            "Must contain `QX_COOKIES` and `QX_TOKEN`."
-        )
-        env_text = st.text_area(
-            ".env contents",
-            height=200,
-            placeholder=(
-                "QX_EMAIL=your@email.com\n"
-                "QX_PASSWORD=yourpassword\n"
-                "QX_COOKIES=your_cookie_string_here\n"
-                "QX_TOKEN=your_token_string_here"
-            ),
-        )
-        if st.button("Load & Connect", type="primary", use_container_width=True):
-            parsed = parse_env(env_text)
-            creds  = {
-                "email":    parsed.get("QX_EMAIL", ""),
-                "password": parsed.get("QX_PASSWORD", ""),
-                "cookies":  parsed.get("QX_COOKIES", ""),
-                "token":    parsed.get("QX_TOKEN", ""),
-            }
-            if not creds["cookies"] or not creds["token"]:
-                st.error("QX_COOKIES and QX_TOKEN are required.")
-            else:
-                st.session_state.credentials = creds
-                db.save_credentials(creds)
-                engine.start(creds)
-                st.session_state.engine_started = True
-                st.success("Engine started! Go to **Dashboard** — signals will appear within 20 seconds.")
-
-    with tab2:
-        with st.form("manual_creds"):
-            email    = st.text_input("QX_EMAIL",    value=st.session_state.credentials.get("email", ""))
-            password = st.text_input("QX_PASSWORD", value=st.session_state.credentials.get("password", ""), type="password")
-            cookies  = st.text_area("QX_COOKIES",  value=st.session_state.credentials.get("cookies", ""), height=80)
-            token    = st.text_input("QX_TOKEN",   value=st.session_state.credentials.get("token", ""),  type="password")
-            if st.form_submit_button("Save & Connect", use_container_width=True):
-                if not cookies or not token:
-                    st.error("QX_COOKIES and QX_TOKEN are required.")
-                else:
-                    creds = {"email": email, "password": password, "cookies": cookies, "token": token}
-                    st.session_state.credentials = creds
-                    db.save_credentials(creds)
-                    engine.start(creds)
-                    st.session_state.engine_started = True
-                    st.success("Engine started! Go to **Dashboard**.")
-
-    # ── Current status ────────────────────────────────────────────────────────
-    if has_creds():
-        st.divider()
-        creds = st.session_state.credentials
-        col_a, col_b = st.columns([3, 1])
-        with col_a:
-            st.subheader("Current credentials")
-            st.markdown(f"- **Email:** `{creds.get('email') or '(not set)'}`")
-            st.markdown(f"- **Cookies:** `{creds['cookies'][:50]}...`")
-            st.markdown(f"- **Token:** `{'●' * 16}`")
-            st.markdown(f"- **Engine:** `{engine.status}`")
-        with col_b:
-            st.write("")
-            st.write("")
-            if st.button("Clear & Disconnect", type="secondary"):
-                engine.stop()
-                st.session_state.credentials   = {}
-                st.session_state.engine_started = False
-                db.clear_credentials()
-                st.rerun()
-
-    # ── Cloud deployment guide ────────────────────────────────────────────────
-    with st.expander("☁ Streamlit Cloud deployment guide"):
-        st.markdown("""
-### Deploy to Streamlit Cloud (free, 24/7)
-
-1. Push the `streamlit_app/` folder to a **GitHub repo**
-2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**
-3. Repo → branch → main file: **`app.py`**
-4. **Advanced settings → Secrets**, paste:
-
-```toml
-QX_EMAIL    = "your@email.com"
-QX_PASSWORD = "yourpassword"
-QX_COOKIES  = "your_full_cookie_string"
-QX_TOKEN    = "your_token_string"
-```
-
-5. Click **Deploy** — live in ~60 seconds
-
-> **To keep it alive 24/7:** Streamlit Cloud sleeps after ~15 min inactivity.
-> Add your app URL to [UptimeRobot](https://uptimerobot.com) (free) to ping it
-> every 5 minutes — it will never sleep.
-""")
